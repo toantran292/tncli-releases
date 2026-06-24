@@ -173,6 +173,47 @@ repos:
 | `{{branch_safe}}` | Branch with `/`→`_`, `-`→`_` | `feat_login` |
 | `{{branch}}` | Raw branch name | `feat/login` |
 
+#### UI customization
+
+`tncli.yml` has an optional `ui:` block that tunes the TUI without
+recompiling. Everything here is purely cosmetic — feel free to leave
+it out.
+
+```yaml
+ui:
+  sidebar:
+    width: "25%"            # left tree width: "25%", "30", "30c"
+  theme:
+    border: rounded         # rounded | sharp
+    colors:
+      primary: "6"          # cursor / active accents (ANSI 0–255)
+      accent: "14"          # idle / info color
+      muted: "8"            # dim text
+    glyphs:
+      running: "●"
+      thinking: "✻"
+  layout:
+    # Extra widget panes spawned around the main TUI on startup.
+    # Each pane runs a command in its own tmux pane. Use `title` to
+    # set the text shown in the tmux pane border.
+    panes:
+      - id: status-bar
+        title: " status "
+        command: tncli widget status-bar
+        side: bottom        # top | bottom | left | right
+        size: "1"           # rows (or cols) — accepts "30%" too
+        full_window: true   # span across the whole window edge
+```
+
+Notes:
+- When `ui.sidebar.width` is set it overrides any saved split — restart
+  to pick up changes immediately.
+- Workspaces with zero running services auto-collapse on startup; any
+  manual expand/collapse persists from then on.
+- The pane border title (`tmux pane-border-status: top`) reads the
+  per-pane `@agent_state` user option, set by tncli for the TUI, log,
+  AI, and layout panes. Other panes render an empty border.
+
 ## CLI Usage
 
 ```bash
@@ -195,23 +236,32 @@ tncli update                            # update to latest release
 
 ## TUI
 
-Interactive terminal interface. Left panel shows workspaces, right panel shows logs.
+Interactive terminal interface. Workspace tree on the left, live logs on
+the right — each is a tmux pane, no lipgloss frame.
 
 ```
-┌─ myproject ───────┬─ logs: api~api [1/2] ────────────────┐
-│▾● main       2/5  │ => Booting Puma                       │
-│ ├ ● api      2/2  │ * Listening on tcp://127.0.0.1:3000   │
-│ │ ├ ● api         │ Started GET "/api/v1/..."             │
-│ │ └ ● worker      │ Completed 200 OK in 12ms              │
-│ └ ○ client   0/1  │                                       │
-│   └ ○ web         │                                       │
-│▾● feat-123   3/3  │                                       │
-│ ├ ● api      2/2  │                                       │
-│ └ ● client   1/1  │                                       │
-│▸○ fix-456    0/3  │                                       │
-└───────────────────┴───────────────────────────────────────┘
- s start  x stop  c cmds  e edit  b branch  w wt/ws  ? help
+─ myproject ──────────────────┬─ api~api ──────────────────────
+ ● main             2/5  185M │ => Booting Puma
+   ● api            2/2       │ * Listening on tcp://127.0.0.1:3000
+     ● api                23M │ Started GET "/api/v1/..."
+     ● worker          112M  │ Completed 200 OK in 12ms
+   ○ client           0/1     │
+     ○ web                    │
+ · · · · · · · · · · · · · · ·│
+ ● feat-123          3/3      │
+   ● api            2/2       │
+   ● client         1/1       │
+ · · · · · · · · · · · · · · ·│
+ ▸ fix-456-too-long…          │   ← collapsed when idle
+─────────────────────────────────────────────────────────────────
+ tncli 0.7.14 │ myproject │ AI 1 idle │ 11:30:42
 ```
+
+Notes you might spot above:
+- Idle workspaces auto-collapse to one row; expand them with `Enter`.
+- A dotted divider separates expanded workspaces.
+- Long branch names truncate at hyphen boundaries (`fix-456-too-long…`).
+- The bottom row is a configurable widget pane (`ui.layout`).
 
 ### Keyboard
 

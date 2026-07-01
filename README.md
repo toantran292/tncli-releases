@@ -1,6 +1,15 @@
 # tncli
 
-tmux-based workspace manager for multi-repo projects. Define services, shared infrastructure, and workspace combinations in YAML. Manage everything through an interactive TUI or CLI commands.
+Web-first workspace manager for multi-repo dev environments. Define
+services, shared infrastructure, and per-branch workspaces in one
+`tncli.yml`, then manage everything from a **browser dashboard** backed by
+tmux, Docker, and git worktrees.
+
+Running `tncli` starts a local web server (an xterm.js mirror of your tmux
+panes) — start/stop services, watch live logs, shell into any pane, track
+PRs, and create/delete isolated workspaces, all from the browser.
+
+📖 **Full documentation:** https://toantran292.github.io/tncli-docs/
 
 ## Install
 
@@ -8,7 +17,7 @@ tmux-based workspace manager for multi-repo projects. Define services, shared in
 curl -fsSL https://raw.githubusercontent.com/toantran292/tncli-releases/main/install.sh | bash
 ```
 
-Update to latest:
+Update to the latest release:
 
 ```bash
 tncli update
@@ -23,20 +32,11 @@ tncli update
 | Linux | x86_64 | `tncli-linux-amd64` |
 | Linux | ARM64 | `tncli-linux-arm64` |
 
-### Build from source
-
-Requires Go 1.26+, tmux, docker.
-
-```bash
-make build         # dev build
-make release       # optimized + codesign (macOS)
-make install       # release + copy to /usr/local/bin
-```
-
 ### Dependencies
 
 - `tmux` (3.x+)
 - `zsh`
+- `git`
 - `docker` (for shared services)
 
 ```bash
@@ -44,327 +44,44 @@ make install       # release + copy to /usr/local/bin
 brew install tmux
 
 # Ubuntu/Debian
-sudo apt install tmux zsh
+sudo apt install tmux zsh git
 ```
 
-## Quick Start
-
-1. Create `tncli.yml` at your project root
-2. Run `tncli setup` (one-time: /etc/hosts for shared services + gitignore)
-3. Run `tncli` to open TUI
-
-## Config
-
-`tncli.yml` defines your repos, services, shared infrastructure, and workspace combinations.
-
-```yaml
-session: myproject
-default_branch: main
-
-shared_services:
-  postgres:
-    image: postgres:16
-    ports: ["5432"]                # container port only — host port is dynamic
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-    volumes: ["shared_postgres:/var/lib/postgresql/data"]
-    db_user: postgres
-    db_password: postgres
-
-  redis:
-    image: redis:7-alpine
-    ports: ["6379"]
-    capacity: 16                   # auto-scales when slots exhausted
-
-repos:
-  my-api:
-    alias: api
-    default_branch: master
-    worktree:
-      copy: [.env, .env.secrets]
-      compose_files: [docker-compose.yml]
-      env_files: ".env.development.local"
-      env:
-        DATABASE_URL: "postgres://{{conn:postgres}}/myapp_{{branch_safe}}"
-        REDIS_URL: "redis://{{host:redis}}:{{port:redis}}/{{slot:redis}}"
-      service_overrides:
-        local_postgres:
-          profiles: ["disabled"]
-      shared_services:
-        - redis
-        - postgres
-      databases:
-        - "{{branch_safe}}"
-      setup:
-        - bundle install
-        - rake db:migrate
-      pre_delete:
-        - docker compose down -v
-    shortcuts:
-      - cmd: bundle install
-        desc: Install dependencies
-      - cmd: rake db:migrate
-        desc: Migrate database
-    services:
-      api:
-        cmd: bundle exec rails server
-      worker:
-        cmd: bundle exec sidekiq
-
-  my-client:
-    alias: client
-    worktree:
-      env:
-        NEXT_PUBLIC_API_URL: "{{url:my-api}}"
-      env_files: ".env.local"
-      setup:
-        - npm install
-    services:
-      web:
-        cmd: npm run dev
-```
-
-### Config Reference
-
-#### Repo fields
-
-| Field | Description |
-|-------|-------------|
-| `alias` | Short name (used in combinations and TUI display) |
-| `default_branch` | Override global default branch for this repo |
-| `pre_start` | Command to run before any service (e.g. `nvm use`) |
-| `worktree.copy` | Files to copy from repo to worktree (e.g. `.env`) |
-| `worktree.compose_files` | Docker compose files for this repo |
-| `worktree.env_files` | Files to write env overrides (e.g. `.env.local`) |
-| `worktree.env` | Env templates (`{{host:NAME}}`, `{{port:NAME}}`, `{{slot:SERVICE}}`) |
-| `worktree.shared_services` | Shared services this repo needs |
-| `worktree.service_overrides` | Docker compose service overrides (disable/limit) |
-| `worktree.databases` | Database name templates (auto-created per workspace) |
-| `worktree.setup` | Commands to run after creating worktree |
-| `worktree.pre_delete` | Commands to run before deleting worktree |
-| `shortcuts` | Quick commands accessible via `c` key |
-| `services` | Named services with `cmd`, optional `env`, `pre_start` |
-
-#### Shared service fields
-
-| Field | Description |
-|-------|-------------|
-| `image` | Docker image |
-| `ports` | Container ports (host ports are dynamically allocated) |
-| `environment` | Container environment variables |
-| `volumes` | Volume mounts |
-| `command` | Override container command |
-| `healthcheck` | Health check config (`test`, `interval`, `timeout`, `retries`) |
-| `db_user` / `db_password` | Credentials for auto database creation |
-| `capacity` | Max slots per instance (auto-scales when exceeded) |
-
-#### Template variables
-
-| Template | Resolves to | Example |
-|----------|-------------|---------|
-| `{{host:NAME}}` | Shared service name (resolved via /etc/hosts) | `postgres` |
-| `{{port:NAME}}` | Dynamic port (shared service or repo proxy_port) | `44800` |
-| `{{url:NAME}}` | `http://{host}:{port}` | `http://postgres:44800` |
-| `{{conn:NAME}}` | `user:pass@host:port` (from shared service creds) | `postgres:postgres@postgres:44800` |
-| `{{db:N}}` | Nth database name (session-prefixed) | `myproject_feat_login` |
-| `{{slot:SERVICE}}` | Allocated slot for capacity-limited service | `3` |
-| `{{bind_ip}}` | Always `127.0.0.1` | `127.0.0.1` |
-| `{{branch_safe}}` | Branch with `/`→`_`, `-`→`_` | `feat_login` |
-| `{{branch}}` | Raw branch name | `feat/login` |
-
-#### UI customization
-
-`tncli.yml` has an optional `ui:` block that tunes the TUI without
-recompiling. Everything here is purely cosmetic — feel free to leave
-it out.
-
-```yaml
-ui:
-  sidebar:
-    width: "25%"            # left tree width: "25%", "30", "30c"
-  theme:
-    border: rounded         # rounded | sharp
-    colors:
-      primary: "6"          # cursor / active accents (ANSI 0–255)
-      accent: "14"          # idle / info color
-      muted: "8"            # dim text
-    glyphs:
-      running: "●"
-      thinking: "✻"
-  layout:
-    # Extra widget panes spawned around the main TUI on startup.
-    # Each pane runs a command in its own tmux pane. Use `title` to
-    # set the text shown in the tmux pane border.
-    panes:
-      - id: status-bar
-        title: " status "
-        command: tncli widget status-bar
-        side: bottom        # top | bottom | left | right
-        size: "1"           # rows (or cols) — accepts "30%" too
-        full_window: true   # span across the whole window edge
-```
-
-Notes:
-- When `ui.sidebar.width` is set it overrides any saved split — restart
-  to pick up changes immediately.
-- Workspaces with zero running services auto-collapse on startup; any
-  manual expand/collapse persists from then on.
-- The pane border title (`tmux pane-border-status: top`) reads the
-  per-pane `@agent_state` user option, set by tncli for the TUI, log,
-  AI, and layout panes. Other panes render an empty border.
-
-## CLI Usage
+## Quick start
 
 ```bash
-tncli                                   # open TUI (default)
-tncli start <service|combo>             # start services
-tncli stop [service|combo]              # stop (no arg = stop all)
-tncli restart <service|combo>           # restart
-tncli status                            # show running services
-tncli list                              # list services and workspaces
-tncli attach [service]                  # attach to tmux session
-tncli logs <service>                    # show recent output
-tncli setup                             # one-time: /etc/hosts + gitignore
-tncli migrate                           # migrate from old IP-based system
-tncli workspace create <combo> <branch> # create workspace
-tncli workspace delete <branch>         # delete workspace
-tncli workspace list                    # list workspaces with details
-tncli db reset <branch>                 # drop + recreate databases
-tncli update                            # update to latest release
-```
-
-## TUI
-
-Interactive terminal interface. Workspace tree on the left, live logs on
-the right — each is a tmux pane, no lipgloss frame.
-
-```
-─ myproject ──────────────────┬─ api~api ──────────────────────
- ● main             2/5  185M │ => Booting Puma
-   ● api            2/2       │ * Listening on tcp://127.0.0.1:3000
-     ● api                23M │ Started GET "/api/v1/..."
-     ● worker          112M  │ Completed 200 OK in 12ms
-   ○ client           0/1     │
-     ○ web                    │
- · · · · · · · · · · · · · · ·│
- ● feat-123          3/3      │
-   ● api            2/2       │
-   ● client         1/1       │
- · · · · · · · · · · · · · · ·│
- ▸ fix-456-too-long…          │   ← collapsed when idle
-─────────────────────────────────────────────────────────────────
- tncli 0.7.14 │ myproject │ AI 1 idle │ 11:30:42
-```
-
-Notes you might spot above:
-- Idle workspaces auto-collapse to one row; expand them with `Enter`.
-- A dotted divider separates expanded workspaces.
-- Long branch names truncate at hyphen boundaries (`fix-456-too-long…`).
-- The bottom row is a configurable widget pane (`ui.layout`).
-
-### Keyboard
-
-**Left panel:** `j/k` navigate, `Enter/Space` toggle, `s` start, `x` stop, `X` stop all, `r` restart, `c` shortcuts, `e` editor, `b` branch, `w` workspace, `d` delete, `t` shell, `I` shared info, `R` reload, `Tab` focus log
-
-**Right panel:** `j/k` scroll, `G/g` bottom/top, `/` search, `n/N` next/prev, `i` interactive, `y` copy mode, `Tab` back
-
-**Global:** `a` attach tmux, `?` help, `q` quit
-
-## Port Allocation
-
-No hardcoded ports, no loopback IPs, no sudo for port setup.
-
-```
-Pool: 40000-49999 (10,000 ports)
-├── Slot 0 (session A): 40000-44999
-│   ├── Workspace blocks: 40000-44799 (48 blocks × 100 ports)
-│   └── Shared services:  44800-44999 (200 ports)
-└── Slot 1 (session B): 45000-49999
-```
-
-Each workspace gets a 100-port block. Each service gets a stable index within its block. Shared services get dynamic ports from the top of the slot.
-
-Templates like `{{port:postgres}}` resolve to the allocated port automatically. Same URL works everywhere: browser, host process, Docker container.
-
-## Workspaces
-
-Workspaces let you run multiple copies of your project simultaneously, each on its own git branch with isolated databases and ports.
-
-### How it works
-
-1. **Create**: `w` on main/combo row → enter branch name → repo selection
-2. Pipeline runs 7 stages: validate → provision → infra → source → configure → setup → network
-3. Stages 4-6 run per-repo in **parallel**
-4. After creation: `w` on workspace instance → add/remove repos
-
-### Port & Database Isolation
-
-Each workspace gets its own port block and databases:
-
-```
-Shared Infrastructure (dynamic ports)
-┌──────────────────────────────┐
-│ postgres :44800              │
-│ redis    :44801              │  one instance,
-│ minio    :44802              │  many databases/slots
-└──────────────────────────────┘
-         │
-         ├─── main workspace
-         │    DB: myproject_main
-         │    Redis: /0
-         │    Ports: 40000-40099
-         │
-         ├─── feat-123 workspace
-         │    DB: myproject_feat_123
-         │    Redis: /1
-         │    Ports: 40100-40199
-         │
-         └─── fix-456 workspace
-              DB: myproject_fix_456
-              Redis: /2
-              Ports: 40200-40299
-```
-
-### Setup (one-time)
-
-```bash
+# 1. Create tncli.yml at your project root (see the docs)
+# 2. One-time setup (gitignore + shared-service port pool)
 tncli setup
+
+# 3. Launch the web dashboard
+tncli
 ```
 
-Adds shared service names to `/etc/hosts` (requires sudo) and configures global gitignore.
+`tncli` serves the dashboard on `http://0.0.0.0:8765` (reachable on your
+LAN; use `tncli web --host 127.0.0.1` to keep it local). Open it in your
+browser and manage services, workspaces, logs, and PRs from there.
 
-### Migrating from old system
+## CLI
+
+The browser is the primary surface; the rest is plain subcommands:
 
 ```bash
-tncli migrate
+tncli                      # launch the web dashboard (default)
+tncli web [--host --port]  # dashboard with an explicit bind
+tncli workspace create <branch>   # spawn an isolated workspace (worktrees + DBs)
+tncli workspace delete <branch>
+tncli start|stop|restart|status [target]
+tncli logs|attach <service>
+tncli db reset|clean
+tncli run <service> <cmd...>
+tncli list · disk · migrate · setup · update · version · completion
 ```
 
-Cleans old state files (Caddy, loopback IPs, proxy routes), re-initializes network state with dynamic ports, regenerates env files and compose overrides for all existing workspaces.
+See the [documentation](https://toantran292.github.io/tncli-docs/) for the
+full `tncli.yml` reference (variables, environments, shared services,
+port allocation) and guides.
 
-## Architecture
+## License
 
-Go single-binary CLI+TUI. Each service runs in a tmux window within a shared session.
-
-```
-cmd/tncli/                 CLI entry (cobra dispatch)
-internal/
-  config/                  YAML parsing, service resolution
-  commands/                CLI command implementations
-  services/                Infrastructure (docker, git, network, compose, files)
-  pipeline/                Workspace lifecycle (7 create stages, 5 delete stages)
-  tmux/                    tmux subprocess wrapper
-  tui/                     Terminal UI (bubbletea)
-  popup/                   Popup dialogs
-  lock/                    Lock file management
-```
-
-## Release
-
-```bash
-make patch         # 0.5.0 → 0.5.1
-make minor         # 0.5.0 → 0.6.0
-make major         # 0.5.0 → 1.0.0
-```
-
-Bumps version, commits, tags, pushes. GitHub Actions builds all platforms automatically.
+MIT
